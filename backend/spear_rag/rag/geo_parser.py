@@ -165,9 +165,20 @@ def _extract_location(text: str) -> Optional[str]:
 
     # Look for capitalized words (English place names)
     caps = re.findall(r'\b[A-Z][a-z]{2,}\b', text)
+    _stop = {
+        "what","where","when","which","how","the","was","did",
+        "india","flood","drought","crop","fire","heat","year",
+        # common query verbs / starters
+        "give","show","analyze","analyse","find","tell","get",
+        "check","display","calculate","compute","fetch","list",
+        "explain","describe","report","compare","use","using",
+        "land","cover","crop","flood","near","for","and","with",
+        "season","rabi","kharif","status","extent","health",
+        "sentinel","planet","climate","area","region","district",
+        "latitude","longitude","coordinates","ndvi","ndwi","lst",
+    }
     for cap in caps:
-        if cap.lower() not in {"what","where","when","which","how","the","was","did",
-                                "india","flood","drought","crop","fire","heat","year"}:
+        if cap.lower() not in _stop:
             return cap
 
     return None

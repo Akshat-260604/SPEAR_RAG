@@ -30,3 +30,6 @@ spear_index/*.parquet
 # OS
 .DS_Store
 Thumbs.db
+
+# Models
+models/
