@@ -15,42 +15,40 @@ from pathlib import Path
 # ─── Load .env automatically ──────────────────────────────────────────────────
 try:
     from dotenv import load_dotenv
-    _env_path = Path(__file__).resolve().parents[2] / ".env"   # project root/.env
-    load_dotenv(dotenv_path=_env_path)
+    _env_path = Path(__file__).resolve().parents[2] / ".env"   # backend/.env
+    load_dotenv(dotenv_path=_env_path, override=True)
 except ImportError:
-    pass   # python-dotenv not installed — rely on env vars being set externally
+    pass   # rely on env vars being set externally
 
 from spear_rag.rag.geo_parser import SpatialQuery
 
 
-# ─── Gemini setup ─────────────────────────────────────────────────────────────
+# ─── Gemini setup (uses google-generativeai legacy SDK) ───────────────────────
 try:
-    from google import genai
-    from google.genai import types as genai_types
+    import google.generativeai as genai_sdk
     _GEMINI_AVAILABLE = True
 except ImportError:
-    try:
-        import google.generativeai as genai_legacy
-        _GEMINI_AVAILABLE = True
-        _USE_LEGACY = True
-    except ImportError:
-        _GEMINI_AVAILABLE = False
+    _GEMINI_AVAILABLE = False
 
-_GEMINI_CLIENT = None
+_GEMINI_MODEL = None
 
 def _get_gemini_client():
-    global _GEMINI_CLIENT
-    if _GEMINI_CLIENT is not None:
-        return _GEMINI_CLIENT
-    api_key = os.environ.get("GEMINI_API_KEY", "")
+    global _GEMINI_MODEL
+    if _GEMINI_MODEL is not None:
+        return _GEMINI_MODEL
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key or not _GEMINI_AVAILABLE:
+        print(f"[Gemini] API key present={bool(api_key)}, SDK available={_GEMINI_AVAILABLE}")
         return None
     try:
-        client = genai.Client(api_key=api_key)
-        _GEMINI_CLIENT = client
-        return client
-    except Exception:
+        genai_sdk.configure(api_key=api_key)
+        _GEMINI_MODEL = genai_sdk.GenerativeModel("gemini-2.5-flash-lite")
+        print("[Gemini] Client initialised ✅")
+        return _GEMINI_MODEL
+    except Exception as e:
+        print(f"[Gemini] Setup failed: {e}")
         return None
+
 
 
 # ─── System prompt ────────────────────────────────────────────────────────────
@@ -92,35 +90,61 @@ def _rule_based_answer(
             f"in the specified time range. Try a broader region or time window."
         )
 
-    lines = [
-        f"📍 **{query.location}** — Satellite Analysis",
-        f"Year: {query.year_start or 'all years'} | Event: {query.event_type or 'general'}",
-        "",
-    ]
+    # 1. Aggregate signals across all modalities
+    avg_ndvi = []
+    avg_ndwi = []
+    climate_stats = {}
+    active_mods = []
 
     for mod, result in retrieval_results.items():
         n = result.get("n_retrieved", 0)
-        if n == 0:
-            continue
-        lines.append(f"**{mod.upper()} ({n:,} pixels)**")
-        if result.get("ndwi") is not None:
-            ndwi = result["ndwi"]
-            interp = ("Flood/water detected" if ndwi > 0.2 else
-                      "Marginal moisture" if ndwi > 0 else "Dry conditions")
-            lines.append(f"  • NDWI: {ndwi} → {interp}")
-        if result.get("ndvi") is not None:
-            ndvi = result["ndvi"]
-            interp = ("Dense vegetation" if ndvi > 0.5 else
-                      "Moderate vegetation" if ndvi > 0.2 else "Sparse/stressed vegetation")
-            lines.append(f"  • NDVI: {ndvi} → {interp}")
-        stats = result.get("raw_stats", {})
-        for col in ["total_precipitation", "LST_Day_1km", "elevation"]:
-            if col in stats:
-                s = stats[col]
-                lines.append(f"  • {stats[col]['description']}: {s['mean']}")
-        lines.append("")
+        if n == 0: continue
+        active_mods.append(f"{mod.upper()} ({n:,}px)")
+        
+        if result.get("ndvi") is not None: avg_ndvi.append(result["ndvi"])
+        if result.get("ndwi") is not None: avg_ndwi.append(result["ndwi"])
+        
+        if mod == "climate" and "raw_stats" in result:
+            stats = result["raw_stats"]
+            if "total_precipitation" in stats:
+                climate_stats["precip"] = stats["total_precipitation"]["mean"]
+            if "LST_Day_1km" in stats:
+                climate_stats["lst_day"] = stats["LST_Day_1km"]["mean"]
+            if "elevation" in stats:
+                climate_stats["elev"] = stats["elevation"]["mean"]
 
-    lines.append("*(LLM analysis unavailable — set GEMINI_API_KEY for full interpretation)*")
+    # 2. Build professional output
+    lines = [
+        f"**Satellite Insights: {query.location}**",
+        f"Timeframe: {query.year_start or 'All years'} | Focus: {query.query_type.title()}",
+        "",
+        "**Key Environmental Signals**"
+    ]
+
+    # Vegetation
+    if avg_ndvi:
+        ndvi = sum(avg_ndvi) / len(avg_ndvi)
+        interp = "Dense, healthy canopy" if ndvi > 0.5 else "Moderate vegetation" if ndvi > 0.2 else "Sparse/stressed vegetation or barren land"
+        lines.append(f"• **Vegetation Health (NDVI):** {ndvi:.3f} — {interp}")
+
+    # Moisture/Water
+    if avg_ndwi:
+        ndwi = sum(avg_ndwi) / len(avg_ndwi)
+        interp = "High water presence / flooded" if ndwi > 0.2 else "Marginal moisture" if ndwi > 0 else "Dry conditions"
+        lines.append(f"• **Surface Moisture (NDWI):** {ndwi:.3f} — {interp}")
+
+    # Climate
+    if climate_stats:
+        lines.append("")
+        lines.append("**Climate Profile**")
+        if "lst_day" in climate_stats: lines.append(f"• **Surface Temp (Day):** {climate_stats['lst_day']} °C")
+        if "precip" in climate_stats: lines.append(f"• **Precipitation:** {climate_stats['precip']} mm")
+        if "elev" in climate_stats: lines.append(f"• **Elevation:** {climate_stats['elev']} m")
+
+    lines.append("")
+    lines.append("**Data Sources Utilized:**")
+    lines.append(", ".join(active_mods))
+
     return "\n".join(lines)
 
 
@@ -155,24 +179,29 @@ def generate_answer(
 
     total_pixels = sum(r.get("n_retrieved", 0) for r in retrieval_results.values())
 
+    # First generate the beautiful rule-based insight box
+    structured_insights = _rule_based_answer(query, retrieval_results, context)
+
     # ── LLM answer ────────────────────────────────────────────────────────────
     if model is not None:
         full_prompt = (
             f"{SYSTEM_PROMPT}\n\n"
             f"--- SATELLITE CONTEXT ---\n{context}\n\n"
-            f"--- USER QUESTION ---\n{query.raw_query}"
+            f"--- USER QUESTION ---\n{query.raw_query}\n\n"
+            f"(Provide a highly crisp, punchy summary in max 2 sentences. Do not hallucinate or use emojis.)"
         )
         try:
-            response = model.models.generate_content(
-                model="models/gemini-2.5-flash-lite",
-                contents=full_prompt,
-            )
-            answer_text = response.text
+            response = model.generate_content(full_prompt)
+            ai_text = response.text.strip()
+            answer_text = f"{structured_insights}\n\n{ai_text}"
         except Exception as e:
-            print(f"[LLM] Error: {e}")
-            answer_text = _rule_based_answer(query, retrieval_results, context)
+            err_msg = str(e)
+            print(f"[LLM] Error: {err_msg}")
+            
+            # Pass the error to the UI so it's obvious when a quota limit is hit
+            answer_text = f"{structured_insights}\n\n*(Analysis failed: {err_msg[:120]}...)*"
     else:
-        answer_text = _rule_based_answer(query, retrieval_results, context)
+        answer_text = structured_insights
 
     return {
         "answer":        answer_text,

@@ -24,6 +24,48 @@ MODALITY_COLORS = {
     "planet":  "#e76f51",
 }
 
+LANDCOVER_LABELS = {
+    0: "Water",
+    1: "Trees / Forest",
+    2: "Grass",
+    3: "Flooded Vegetation",
+    4: "Crops / Agriculture",
+    5: "Shrub & Scrub",
+    6: "Built Area",
+    7: "Bare Ground",
+    8: "Snow & Ice",
+}
+
+
+def _make_popup(p: dict) -> str:
+    """Build an HTML popup string for a single data point."""
+    mod   = p.get("modality", "?").upper()
+    year  = p.get("year", "?")
+    cls   = p.get("classification")
+    ndvi  = p.get("ndvi")
+    ndwi  = p.get("ndwi")
+    lat   = p.get("lat", 0)
+    lon   = p.get("lon", 0)
+
+    cls_label = LANDCOVER_LABELS.get(int(cls), f"Class {cls}") if cls is not None else "—"
+
+    rows = [
+        f"<tr><td><b>Sensor</b></td><td>{mod}</td></tr>",
+        f"<tr><td><b>Year</b></td><td>{year}</td></tr>",
+        f"<tr><td><b>Land cover</b></td><td>{cls_label}</td></tr>",
+        f"<tr><td><b>Lat / Lon</b></td><td>{lat:.4f}, {lon:.4f}</td></tr>",
+    ]
+    if ndvi is not None:
+        rows.append(f"<tr><td><b>NDVI</b></td><td>{ndvi:.3f}</td></tr>")
+    if ndwi is not None:
+        rows.append(f"<tr><td><b>NDWI</b></td><td>{ndwi:.3f}</td></tr>")
+
+    return (
+        "<table style='font-size:13px;border-collapse:collapse;min-width:180px'>"
+        + "".join(rows)
+        + "</table>"
+    )
+
 
 def build_map(
     map_points: List[Dict],
@@ -36,10 +78,10 @@ def build_map(
     Build an interactive Folium map from retrieved spatial points.
 
     Args:
-        map_points: List of {lat, lon, year, modality} dicts
+        map_points: List of {lat, lon, year, modality, ...} dicts
         center_lat/lon: Map center (auto-computed if None)
         zoom: Initial zoom level
-        heatmap: If True, render HeatMap; else MarkerCluster
+        heatmap: If True, render HeatMap + clickable markers; else MarkerCluster only
 
     Returns:
         HTML string suitable for iframe embedding
@@ -62,35 +104,46 @@ def build_map(
         tiles="CartoDB dark_matter",
     )
 
+    modalities_seen = list({p.get("modality", "unknown") for p in map_points})
+
     if heatmap:
-        # One HeatMap layer per modality
-        modalities_seen = list({p.get("modality", "unknown") for p in map_points})
+        # ── Heatmap layer per modality ────────────────────────────────────────
         for mod in modalities_seen:
             pts = [[p["lat"], p["lon"]] for p in map_points if p.get("modality") == mod]
             if pts:
                 HeatMap(
                     pts,
-                    name=mod.upper(),
+                    name=f"{mod.upper()} Heatmap",
                     radius=10,
                     blur=15,
                     max_zoom=13,
                     gradient={0.2: MODALITY_COLORS.get(mod, "#ffffff"),
                                1.0: "#ffffff"},
+                    show=True,
                 ).add_to(m)
-    else:
-        cluster = MarkerCluster().add_to(m)
-        for p in map_points[:2000]:   # cap markers for performance
-            color = MODALITY_COLORS.get(p.get("modality", ""), "#ffffff")
+
+    # ── Clickable circle markers (sampled for performance) ────────────────────
+    for mod in modalities_seen:
+        mod_pts = [p for p in map_points if p.get("modality") == mod]
+        # Sample up to 1000 per modality to keep the page responsive
+        sample = mod_pts[:1000]
+        color  = MODALITY_COLORS.get(mod, "#ffffff")
+        fg     = folium.FeatureGroup(name=f"{mod.upper()} Pixels", show=False)
+        for p in sample:
             folium.CircleMarker(
                 location=[p["lat"], p["lon"]],
-                radius=3,
+                radius=4,
                 color=color,
                 fill=True,
-                fill_opacity=0.7,
-                popup=f"{p.get('modality','?')} | year={p.get('year','?')}",
-            ).add_to(cluster)
+                fill_color=color,
+                fill_opacity=0.75,
+                weight=1,
+                popup=folium.Popup(_make_popup(p), max_width=260),
+                tooltip=f"{mod.upper()} — click for details",
+            ).add_to(fg)
+        fg.add_to(m)
 
-    folium.LayerControl().add_to(m)
+    folium.LayerControl(collapsed=False).add_to(m)
 
     return m._repr_html_()
 

@@ -1,6 +1,52 @@
 import { useEffect, useMemo, useState } from 'react';
 import { fetchModalities, runQuery } from './api';
 
+/** Lightweight markdown renderer — no external library needed */
+function MarkdownAnswer({ text }) {
+  if (!text) return null;
+
+  const renderInline = (str) => {
+    // Bold: **text**
+    const parts = str.split(/(\*\*[^*]+\*\*)/g);
+    return parts.map((part, i) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <strong key={i}>{part.slice(2, -2)}</strong>;
+      }
+      // Italic: *text*
+      const italicParts = part.split(/(\*[^*]+\*)/g);
+      return italicParts.map((p, j) => {
+        if (p.startsWith('*') && p.endsWith('*') && p.length > 2) {
+          return <em key={`${i}-${j}`}>{p.slice(1, -1)}</em>;
+        }
+        return p;
+      });
+    });
+  };
+
+  const lines = text.split('\n');
+  return (
+    <div className="answer-md">
+      {lines.map((line, i) => {
+        if (!line.trim()) return <br key={i} />;
+        // Bullet list item
+        if (/^\s*[•\-\*]\s/.test(line)) {
+          return (
+            <div key={i} className="md-bullet">
+              <span className="md-bullet-dot">•</span>
+              <span>{renderInline(line.replace(/^\s*[•\-\*]\s*/, ''))}</span>
+            </div>
+          );
+        }
+        // Italic line (e.g. footnotes wrapped in *...*)
+        if (/^\*[^*].*[^*]\*$/.test(line.trim())) {
+          return <p key={i} className="md-note">{renderInline(line)}</p>;
+        }
+        return <p key={i} className="md-p">{renderInline(line)}</p>;
+      })}
+    </div>
+  );
+}
+
 const samples = [
   { title: 'Land cover', text: 'What is the land cover in Punjab district?' },
   { title: 'Crop health', text: 'Analyze crop health and NDVI in Haryana for Rabi season 2022.' },
@@ -233,38 +279,24 @@ function App() {
 
             <div className="answer-block">
               <div className="answer-head">Answer</div>
-              {hasResult ? <pre className="answer-text">{result.answer}</pre> : <p className="muted">Run a query to see the generated answer.</p>}
+              {hasResult ? <MarkdownAnswer text={result.answer} /> : <p className="muted">Run a query to see the generated answer.</p>}
             </div>
 
-            {hasResult && result.query_summary && (
-              <div className="summary">
-                <div className="summary-head">Query summary</div>
-                <p>{result.query_summary}</p>
-              </div>
-            )}
-
-            {modalityBadges.length > 0 && (
-              <div className="chips">
-                {modalityBadges.map((item) => (
-                  <span key={item.name} className="chip">
-                    {item.name.toUpperCase()}: {item.count.toLocaleString()} px
-                  </span>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="panel map-panel">
-            <div className="panel-title">Map preview</div>
-            <p className="panel-hint">Heatmap is rendered inline. Hover and pan inside the frame.</p>
-            {mapDoc ? (
-              <iframe title="Result map" className="map-frame" srcDoc={mapDoc} sandbox="allow-scripts allow-same-origin" />
-            ) : (
-              <div className="map-placeholder">Results map will appear here after you run a query.</div>
-            )}
           </section>
         </div>
       </main>
+
+      <div className="map-container">
+        <section className="panel map-panel">
+          <div className="panel-title">Map preview</div>
+          <p className="panel-hint">Heatmap is rendered inline. Hover and pan inside the frame.</p>
+          {mapDoc ? (
+            <iframe title="Result map" className="map-frame" srcDoc={mapDoc} sandbox="allow-scripts allow-same-origin" />
+          ) : (
+            <div className="map-placeholder">Results map will appear here after you run a query.</div>
+          )}
+        </section>
+      </div>
 
       <footer className="footer">
         <div className="footer-meta">© {new Date().getFullYear()} SPEAR · Spatial Earth Analytics</div>
